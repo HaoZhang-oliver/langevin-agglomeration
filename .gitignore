@@ -1,0 +1,35 @@
+# Python caches and build outputs
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test, lint, and coverage caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and editor state
+.venv/
+.vscode/
+.idea/
+
+# Generated simulation outputs and tutorial source material
+outputs/
+summary_Suresh2021/
+
+# Large/generated data and media artifacts
+*.h5
+*.mp4
+*.gif
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.csv
+
+# OS metadata
+.DS_Store
+Thumbs.db

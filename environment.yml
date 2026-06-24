@@ -1,0 +1,22 @@
+name: langevin-agglomeration
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - numba
+  - matplotlib
+  - pandas
+  - h5py
+  - pyyaml
+  - pyvista
+  - typer
+  - rich
+  - pytest
+  - ruff
+  - imageio
+  - imageio-ffmpeg
+  - pip
+  - pip:
+      - -e .

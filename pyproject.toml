@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ldagg"
+version = "0.1.0"
+description = "Langevin Dynamics aerosol agglomeration without electric fields"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "ldagg contributors" }
+]
+dependencies = [
+  "numpy",
+  "scipy",
+  "numba",
+  "matplotlib",
+  "pandas",
+  "h5py",
+  "imageio",
+  "imageio-ffmpeg",
+  "pyvista",
+  "pyyaml",
+  "typer",
+  "rich",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+ldag = "ldagg.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ldagg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

@@ -1,0 +1,13 @@
+gas:
+  temperature: 300.0
+  pressure: 101325.0
+  viscosity: 1.8258e-5
+  mean_free_path: 66.7e-9
+particle_density: 1000.0
+diameters_nm: [10.0, 100.0, 1000.0]
+height: 0.1
+trials: 8
+dt_factor: 0.01
+max_steps: 200000
+seed: 101
+save_trajectory_steps: 3000
