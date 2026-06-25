@@ -1,0 +1,3 @@
+name: demo_conducting_metal_100nm_primary
+polarizability_SI: 1.3908125693e-32
+notes: Demo value for 100 nm diameter conducting primary sphere, alpha=4*pi*eps0*a^3 for a=50 nm in eps_r=1. Replace with measured or literature values for real materials.

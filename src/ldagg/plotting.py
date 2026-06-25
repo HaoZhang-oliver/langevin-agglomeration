@@ -419,7 +419,7 @@ def _pyvista_snapshot_image(
         _pyvista_add_box(plotter, pv, box_size)
     _pyvista_add_axes_labels(plotter, pv, box_size if not closeup else None, points)
     if title:
-        plotter.add_text(title, position="upper_edge", font_size=14, color="black")
+        plotter.add_text(title, position="upper_left", font_size=10, color="black")
     plotter.add_light(pv.Light(light_type="headlight", intensity=0.45))
     _pyvista_set_camera(plotter, box_size, closeup=closeup, camera_position=camera_position)
     image = plotter.screenshot(return_img=True)
@@ -693,7 +693,7 @@ def plot_agglomeration_trajectories_pyvista(
         if len(final_points):
             label_points = np.vstack([label_points, final_points]) if len(label_points) else final_points
     _pyvista_add_axes_labels(plotter, pv, box_size, label_points)
-    plotter.add_text(title, position="upper_edge", font_size=14, color="black")
+    plotter.add_text(title, position="upper_left", font_size=10, color="black")
     plotter.add_light(pv.Light(light_type="headlight", intensity=0.45))
     _pyvista_set_camera(plotter, box_size)
     image = plotter.screenshot(return_img=True)

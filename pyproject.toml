@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "ldagg"
 version = "0.1.0"
-description = "Langevin Dynamics aerosol agglomeration without electric fields"
+description = "Langevin Dynamics aerosol agglomeration"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
   { name = "ldagg contributors" }
 ]
 dependencies = [
-  "numpy",
+  "numpy<2.5",
   "scipy",
   "numba",
   "matplotlib",
@@ -21,6 +21,7 @@ dependencies = [
   "imageio",
   "imageio-ffmpeg",
   "pyvista",
+  "vtk>=9.4,<9.6",
   "pyyaml",
   "typer",
   "rich",

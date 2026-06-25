@@ -7,6 +7,9 @@ import numpy as np
 BOLTZMANN: float = 1.380649e-23
 """Boltzmann constant, J/K."""
 
+EPS0: float = 8.8541878128e-12
+"""Vacuum permittivity, F/m."""
+
 DEFAULT_GRAVITY = np.array([0.0, 0.0, -9.81], dtype=float)
 """Default gravitational acceleration vector, m/s^2."""
 

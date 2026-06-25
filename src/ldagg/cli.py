@@ -16,7 +16,7 @@ from ldagg.sequential_growth import SequentialGrowthConfig, run_sequential_growt
 from ldagg.settling import SettlingConfig, run_settling
 from ldagg.simulation import CoagulationConfig, run_coagulation
 
-app = typer.Typer(help="Langevin Dynamics aerosol agglomeration without electric fields.")
+app = typer.Typer(help="Langevin Dynamics aerosol agglomeration.")
 
 
 def load_yaml(path: Path) -> dict:

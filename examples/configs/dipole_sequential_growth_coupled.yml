@@ -1,0 +1,37 @@
+gas:
+  temperature: 300.0
+  pressure: 101325.0
+  viscosity: 1.8258e-5
+  mean_free_path: 66.7e-9
+target_size: 4
+seed_type: dimer
+diameter: 1.0e-7
+particle_density: 1000.0
+launch_gap: 1.0e-8
+kill_gap: 4.0e-7
+max_steps_per_trial: 1200
+max_trials: 40
+dt_factor: 0.05
+dt_min: 1.0e-12
+dt_max: 2.0e-7
+friction_model: equivalent_sphere
+seed: 404
+capture_tolerance: 50.0e-9
+move_seed: false
+electric_field:
+  enabled: true
+  vector: [1.0e6, 0.0, 0.0]
+  medium_relative_permittivity: 1.00058
+  material_file: examples/materials/demo_metal_100nm.yml
+  polarizability_model: provided
+  dipole_force_model: cluster_coupled_dipole
+  dipole_cutoff: null
+  regularization_gap: 0.0
+  coupled_internal_regularization_gap: 0.0
+  coupled_condition_warning: 1.0e12
+diagnostics:
+  enabled: true
+  every: 1
+  store_snapshot_forces: true
+  store_event_metrics: true
+  store_pair_summary: true

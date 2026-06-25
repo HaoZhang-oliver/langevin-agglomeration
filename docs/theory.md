@@ -13,7 +13,7 @@ m_i dv_i/dt = -f_i v_i + F_ext,i + F_B,i(t)
 dr_i/dt = v_i
 ```
 
-`F_ext,i = m_i g` for gravity and zero when gravity is disabled. The Brownian force has zero mean and is tied to friction through fluctuation-dissipation.
+`F_ext,i = m_i g` for gravity and zero when gravity is disabled. When a uniform DC electric field is enabled, induced dipole-dipole interactions add deterministic inter-cluster forces to `F_ext,i`. The Brownian force has zero mean and is tied to friction through fluctuation-dissipation.
 
 ## Gas Drag
 
@@ -57,6 +57,34 @@ f_cluster = 3*pi*mu_g*d_ve / C_c(d_ve)
 
 The EB update advances the cluster COM using `m_cluster`, `f_cluster`, and `F_ext = m_cluster*g` when gravity is enabled. A `free_draining` option remains available and computes `f_cluster = sum(f_primary)`. Neither option is a true measured mobility diameter or dynamic-shape-factor model.
 
+## Constant-Field Induced Dipoles
+
+For neutral identical metal primary spheres in a constant DC electric field, the optional model assigns each primary sphere a fixed induced dipole:
+
+```text
+p = alpha * E0
+```
+
+`alpha` is the primary-sphere polarizability in SI units, `C m^2 / V`, read from `electric_field.polarizability_SI`, a YAML material file, or the conducting-sphere model `alpha = 4*pi*eps0*eps_r*a^3`. No net charge is assumed, so there is no single-particle `qE` drift.
+
+For primary spheres in different clusters, with `r_vec = r_j - r_i`, `r_hat = r_vec/|r_vec|`, and `r_eff = max(|r_vec|, r_i + r_j + h_reg)`, the force on primary `j` from primary `i` is:
+
+```text
+F_j<-i = 3/(4*pi*eps0*eps_r*r_eff^4) *
+  [ (p_i.r_hat)*p_j + (p_j.r_hat)*p_i + (p_i.p_j)*r_hat
+    - 5*(p_i.r_hat)*(p_j.r_hat)*r_hat ]
+```
+
+The pair force is anisotropic: parallel dipoles attract head-to-tail and repel side-by-side. The implementation sums all cross-cluster primary-pair forces onto each rigid cluster COM. It does not compute internal forces within a cluster. It also does not apply torques or rotate aggregates, so dipole forces can bias translation and attachment but cannot reorient dimers or larger aggregates.
+
+Diagnostics report the head-to-tail contact energy ratio
+`Gamma_dd_contact = |-2 C / r_contact^3|/(k_B T)`, where
+`C = |p|^2/(4*pi*eps0*eps_r)` and `r_contact = diameter + regularization_gap`.
+The dipole Newton residual is
+`|sum_i F_dipole,i|/(sum_i |F_dipole,i| + eps)` and should be close to zero
+for correctly accumulated internal pair forces. Drift and Brownian step
+diagnostics use `|F_total|*dt/f` and `sqrt(6*(k_B T/f)*dt)` respectively.
+
 ## Collisions and Sticking
 
 A collision occurs when any primary sphere pair across two clusters satisfies:
@@ -79,4 +107,4 @@ The merged aggregate keeps the absolute primary-sphere positions at collision, e
 
 ## Exclusions
 
-Electric fields, charge, induced dipoles, van der Waals forces, sintering, restructuring, rotation, and hydrodynamic interactions are not included in this first implementation.
+Net charge, `qE` drift, Coulomb forces, image forces, AC fields, self-consistent polarization, higher multipoles, van der Waals forces, sintering, restructuring, rotation/torques, and hydrodynamic interactions are not included in this implementation.

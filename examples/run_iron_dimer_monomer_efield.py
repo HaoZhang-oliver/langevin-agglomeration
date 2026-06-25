@@ -1,6 +1,7 @@
-"""Simulate one dimer and one monomer until they stick into a trimer.
+"""Iron dimer + monomer agglomeration in a constant DC electric field.
 
-Edit the variables in the USER INPUTS section to tune the run.
+Edit the variables in the USER INPUTS section to tune the run. The material
+properties are defined directly in this script rather than loaded from YAML.
 """
 
 from __future__ import annotations
@@ -11,16 +12,12 @@ from pathlib import Path
 
 os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
 
-import h5py
 import numpy as np
-import pandas as pd
-import yaml
 
-from ldagg.analysis import aggregate_table
 from ldagg.boundaries import Boundary, apply_boundary_to_cluster
 from ldagg.clusters import DEFAULT_CLUSTER_FRICTION_MODEL, Cluster, dimer_seed
 from ldagg.collisions import find_collision, merge_clusters, nearest_surface_gap
-from ldagg.constants import BOLTZMANN, DEFAULT_PARTICLE_DENSITY
+from ldagg.constants import BOLTZMANN, EPS0
 from ldagg.electric import ElectricFieldConfig, dipole_forces_on_clusters
 from ldagg.gas import Gas
 from ldagg.integrators import eb_step
@@ -30,7 +27,7 @@ from ldagg.plotting import (
     save_agglomeration_snapshots,
     save_agglomeration_video,
 )
-from ldagg.simulation import record_stats, snapshot
+from ldagg.simulation import CoagulationResult, record_stats, snapshot, write_coagulation_outputs
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -42,32 +39,38 @@ def env_bool(name: str, default: bool) -> bool:
 
 # ----------------------------- USER INPUTS -----------------------------
 
-PRIMARY_DIAMETER_M = 100.0e-9
-PARTICLE_DENSITY_KG_M3 = DEFAULT_PARTICLE_DENSITY
-FRICTION_MODEL = DEFAULT_CLUSTER_FRICTION_MODEL
-BOX_SIZE_M = 9.0e-7
+PRIMARY_DIAMETER_M = 30.0e-9
+BOX_SIZE_M = 5.0e-7
+INITIAL_GAP_M = 20.0e-9
 
-INITIAL_GAP_M = 200.0e-9
-INITIAL_APPROACH_SPEED_M_S = 4.0
+# Iron properties. Density is used for mass; polarizability uses the neutral
+# metal/conducting-sphere approximation for the primary sphere in air.
+IRON_DENSITY_KG_M3 = 7874.0
+MEDIUM_RELATIVE_PERMITTIVITY = 1.00058
+IRON_PRIMARY_POLARIZABILITY_SI = (
+    4.0 * np.pi * EPS0 * MEDIUM_RELATIVE_PERMITTIVITY * (0.5 * PRIMARY_DIAMETER_M) ** 3
+)
+
+# 30 kV/cm = 3.0e6 V/m, directed along +z.
+ELECTRIC_FIELD_STRENGTH_V_M = 30.0e3 * 100.0
+ELECTRIC_FIELD_VECTOR_V_M = (0.0, 0.0, ELECTRIC_FIELD_STRENGTH_V_M)
+
+FRICTION_MODEL = DEFAULT_CLUSTER_FRICTION_MODEL
 MOVE_DIMER = True
 BROWNIAN = True
-RANDOM_SEED = 20260623
-ELECTRIC_FIELD_ENABLED = False
-ELECTRIC_FIELD_VECTOR_V_M = (1.0e6, 0.0, 0.0)
-ELECTRIC_FIELD_EPS_R = 1.00058
-POLARIZABILITY_SI = 1.3908125693e-32
+RANDOM_SEED = 20260624
 
 MAX_TIME_S = 5.0e-4
-MAX_STEPS = 100_000
-DT_FACTOR = 0.05
+MAX_STEPS = 20_000
+DT_FACTOR = 0.2
 DT_MIN_S = 1.0e-12
-DT_MAX_S = 1.0e-9
+DT_MAX_S = 5.0e-9
 GAP_FLOOR_FRACTION = 0.01
 CAPTURE_TOLERANCE_M = 0.0
 
-SAVE_EVERY_STEPS = 1
+SAVE_EVERY_STEPS = 5
 DIAGNOSTIC_EVERY_STEPS = 100
-OUTPUT_DIR = Path("outputs/dimer_monomer_to_trimer")
+OUTPUT_DIR = Path("outputs/iron_dimer_monomer_efield")
 
 RENDER_FIGURES = env_bool("LDAGG_RENDER", True)
 VISUALIZATION_BACKEND = os.getenv("LDAGG_VIS_BACKEND", "pyvista")
@@ -75,53 +78,63 @@ SAVE_PNG_SNAPSHOTS = env_bool("LDAGG_SAVE_SNAPSHOTS", True)
 SAVE_VIDEO = env_bool("LDAGG_SAVE_VIDEO", True)
 MAX_RENDERED_FRAMES = 120
 VIDEO_FPS = 10
-VIEW_ELEVATION_DEG = 30.0
-VIEW_AZIMUTH_DEG = 30.0
+VIEW_ELEVATION_DEG = 25.0
+VIEW_AZIMUTH_DEG = 35.0
 
 # -----------------------------------------------------------------------
 
 
-def make_initial_clusters(gas: Gas, rng: np.random.Generator) -> list[Cluster]:
-    center = np.full(3, 0.5 * BOX_SIZE_M)
+def make_z_aligned_dimer(gas: Gas, center: np.ndarray) -> Cluster:
     dimer = dimer_seed(
         0,
         PRIMARY_DIAMETER_M,
-        density=PARTICLE_DENSITY_KG_M3,
+        density=IRON_DENSITY_KG_M3,
         gas=gas,
         friction_model=FRICTION_MODEL,
     )
-    dimer.position = center.copy()
-    dimer.primary_ids = np.array([0, 1], dtype=np.int64)
-
-    monomer_x = center[0] + 1.5 * PRIMARY_DIAMETER_M + INITIAL_GAP_M
-    monomer_position = np.array([monomer_x, center[1], center[2]], dtype=float)
-    monomer_surface_max = monomer_position[0] + 0.5 * PRIMARY_DIAMETER_M
-    boundary_tol = 1.0e-18
-    if monomer_surface_max > BOX_SIZE_M + boundary_tol:
-        raise ValueError(
-            "BOX_SIZE_M is too small for the requested INITIAL_GAP_M; "
-            f"need at least {monomer_surface_max:.3e} m, got {BOX_SIZE_M:.3e} m"
-        )
-    if monomer_surface_max > BOX_SIZE_M:
-        monomer_position[0] -= monomer_surface_max - BOX_SIZE_M
-
-    mass_probe = Cluster.monomer(
-        2,
-        monomer_position,
-        np.zeros(3),
-        PRIMARY_DIAMETER_M,
-        density=PARTICLE_DENSITY_KG_M3,
-        gas=gas,
+    dimer.rel_positions = np.array(
+        [
+            [0.0, 0.0, -0.5 * PRIMARY_DIAMETER_M],
+            [0.0, 0.0, 0.5 * PRIMARY_DIAMETER_M],
+        ],
+        dtype=float,
     )
-    thermal_speed = np.sqrt(BOLTZMANN * gas.temperature / mass_probe.mass)
-    velocity = thermal_speed * rng.normal(size=3)
-    velocity[0] -= INITIAL_APPROACH_SPEED_M_S
+    dimer.position = np.asarray(center, dtype=float)
+    dimer.velocity = np.zeros(3)
+    dimer.primary_ids = np.array([0, 1], dtype=np.int64)
+    dimer.recenter()
+    return dimer
+
+
+def make_initial_clusters(gas: Gas, rng: np.random.Generator) -> list[Cluster]:
+    dimer_center = np.array([0.5 * BOX_SIZE_M, 0.5 * BOX_SIZE_M, 0.5 * BOX_SIZE_M])
+    dimer = make_z_aligned_dimer(gas, dimer_center)
+
+    monomer_z = dimer_center[2] + 1.5 * PRIMARY_DIAMETER_M + INITIAL_GAP_M
+    monomer_position = np.array([dimer_center[0], dimer_center[1], monomer_z], dtype=float)
+    if monomer_position[2] + 0.5 * PRIMARY_DIAMETER_M > BOX_SIZE_M:
+        raise ValueError("BOX_SIZE_M is too small for the requested INITIAL_GAP_M")
+
+    velocity = np.zeros(3)
+    if BROWNIAN:
+        probe = Cluster.monomer(
+            2,
+            monomer_position,
+            np.zeros(3),
+            PRIMARY_DIAMETER_M,
+            density=IRON_DENSITY_KG_M3,
+            gas=gas,
+            friction_model=FRICTION_MODEL,
+        )
+        thermal_speed = np.sqrt(BOLTZMANN * gas.temperature / probe.mass)
+        velocity = thermal_speed * rng.normal(size=3)
+
     monomer = Cluster.monomer(
         2,
         monomer_position,
         velocity,
         PRIMARY_DIAMETER_M,
-        density=PARTICLE_DENSITY_KG_M3,
+        density=IRON_DENSITY_KG_M3,
         gas=gas,
         friction_model=FRICTION_MODEL,
     )
@@ -129,71 +142,22 @@ def make_initial_clusters(gas: Gas, rng: np.random.Generator) -> list[Cluster]:
     return [dimer, monomer]
 
 
-def choose_timestep(
-    gas: Gas,
-    clusters: list[Cluster],
-    boundary: Boundary,
-    forces: np.ndarray | None = None,
-) -> float:
+def choose_timestep(gas: Gas, clusters: list[Cluster], boundary: Boundary, forces: np.ndarray) -> float:
     gap = nearest_surface_gap(clusters, boundary=boundary)
     min_radius = min(float(np.min(cluster.radii)) for cluster in clusters)
     gap_scale = max(gap, GAP_FLOOR_FRACTION * min_radius)
     max_diffusion = max(BOLTZMANN * gas.temperature / cluster.friction for cluster in clusters)
     dt_diff = gap_scale * gap_scale / (6.0 * max_diffusion)
-    if forces is None:
-        forces = np.zeros((len(clusters), 3), dtype=float)
     drift_speeds = [
         np.linalg.norm(force) / cluster.friction
         for force, cluster in zip(np.asarray(forces, dtype=float), clusters, strict=True)
     ]
     max_drift_speed = max(drift_speeds, default=0.0)
     dt_force = gap_scale / max_drift_speed if max_drift_speed > 0.0 else np.inf
-    dt = min(DT_FACTOR * min(dt_diff, dt_force), DT_MAX_S)
+    dt = DT_FACTOR * min(dt_diff, dt_force, DT_MAX_S)
+    if not np.isfinite(dt):
+        dt = DT_MAX_S
     return float(np.clip(dt, DT_MIN_S, DT_MAX_S))
-
-
-def write_run_h5(path: Path, stats: list[dict], snapshots: list[dict], summary: dict) -> Path:
-    if path.exists():
-        try:
-            path.unlink()
-        except PermissionError:
-            path = path.with_name(f"{path.stem}_{os.getpid()}{path.suffix}")
-            print(f"  existing run.h5 is locked; writing {path.name} instead")
-    with h5py.File(path, "w") as h5:
-        for key, value in summary.items():
-            if isinstance(value, (str, bool, int, float, np.bool_, np.integer, np.floating)):
-                h5.attrs[key] = value
-        dtype = np.dtype(
-            [
-                ("time", "f8"),
-                ("step", "i8"),
-                ("cluster_count", "i8"),
-                ("largest_cluster", "i8"),
-                ("events", "i8"),
-                ("mean_cluster_size", "f8"),
-            ]
-        )
-        arr = np.zeros(len(stats), dtype=dtype)
-        for i, row in enumerate(stats):
-            for name in dtype.names:
-                arr[name][i] = row[name]
-        h5.create_dataset("cluster_stats", data=arr)
-        group = h5.create_group("snapshots")
-        for i, snap in enumerate(snapshots):
-            sg = group.create_group(f"{i:06d}")
-            sg.attrs["time"] = snap["time"]
-            for key in (
-                "ids",
-                "positions",
-                "velocities",
-                "sizes",
-                "primary_centers",
-                "primary_radii",
-                "primary_ids",
-                "primary_cluster_ids",
-            ):
-                sg.create_dataset(key, data=snap[key])
-    return path
 
 
 def main() -> None:
@@ -202,25 +166,36 @@ def main() -> None:
     boundary = Boundary("finite", BOX_SIZE_M)
     clusters = make_initial_clusters(gas, rng)
     electric_field = ElectricFieldConfig(
-        enabled=ELECTRIC_FIELD_ENABLED,
+        enabled=True,
         vector=ELECTRIC_FIELD_VECTOR_V_M,
-        medium_relative_permittivity=ELECTRIC_FIELD_EPS_R,
-        polarizability_SI=POLARIZABILITY_SI,
+        medium_relative_permittivity=MEDIUM_RELATIVE_PERMITTIVITY,
+        polarizability_SI=IRON_PRIMARY_POLARIZABILITY_SI,
+        regularization_gap=0.0,
     )
+
     events = []
     stats = [record_stats(0.0, 0, clusters, 0)]
     snapshots = [snapshot(0.0, clusters)]
     time = 0.0
+    step = 0
 
-    print("Dimer + monomer LD run")
+    initial_forces = dipole_forces_on_clusters(
+        clusters,
+        electric_field,
+        PRIMARY_DIAMETER_M,
+        boundary=boundary,
+    )
+    initial_gap = nearest_surface_gap(clusters, boundary=boundary)
+
+    print("Iron dimer + monomer LD run with constant DC electric field")
     print(f"  primary diameter: {PRIMARY_DIAMETER_M:.3e} m")
-    print(f"  initial surface gap: {INITIAL_GAP_M:.3e} m")
-    print(f"  cluster friction model: {FRICTION_MODEL}")
-    print(f"  box size: {BOX_SIZE_M:.3e} m")
-    print(f"  dt_max: {DT_MAX_S:.3e} s")
-    print(f"  capture_tolerance: {CAPTURE_TOLERANCE_M:.3e} m")
-    print(f"  electric field enabled: {ELECTRIC_FIELD_ENABLED}, E0={ELECTRIC_FIELD_VECTOR_V_M} V/m")
-    print(f"  seed: {RANDOM_SEED}")
+    print(f"  iron density: {IRON_DENSITY_KG_M3:.1f} kg/m^3")
+    print(f"  alpha: {IRON_PRIMARY_POLARIZABILITY_SI:.6e} C m^2/V")
+    print(f"  E0: {ELECTRIC_FIELD_VECTOR_V_M} V/m = 30 kV/cm along +z")
+    print(f"  initial surface gap: {initial_gap:.3e} m")
+    print(f"  initial dimer force: {initial_forces[0]} N")
+    print(f"  initial monomer force: {initial_forces[1]} N")
+    print(f"  Brownian enabled: {BROWNIAN}")
     print(f"  output: {OUTPUT_DIR}")
 
     for step in range(1, MAX_STEPS + 1):
@@ -232,7 +207,7 @@ def main() -> None:
                 collision=hit,
                 new_cluster_id=3,
                 time=time,
-                boundary=None,
+                boundary=boundary,
                 project_to_contact=True,
             )
             clusters = [merged]
@@ -251,7 +226,6 @@ def main() -> None:
             print(f"Reached MAX_TIME_S={MAX_TIME_S:.3e} s before contact")
             break
 
-        gap = nearest_surface_gap(clusters, boundary=boundary)
         forces = dipole_forces_on_clusters(
             clusters,
             electric_field,
@@ -261,8 +235,9 @@ def main() -> None:
         if not MOVE_DIMER:
             forces[0] = 0.0
         dt = min(choose_timestep(gas, clusters, boundary, forces), MAX_TIME_S - time)
-        for i, (cluster, force) in enumerate(zip(clusters, forces, strict=True)):
-            if i == 0 and not MOVE_DIMER:
+
+        for cluster, force in zip(clusters, forces, strict=True):
+            if cluster.cluster_id == 0 and not MOVE_DIMER:
                 continue
             result = eb_step(
                 cluster.position,
@@ -285,69 +260,68 @@ def main() -> None:
             stats.append(record_stats(time, step, clusters, len(events)))
             snapshots.append(snapshot(time, clusters))
         if step % DIAGNOSTIC_EVERY_STEPS == 0:
+            gap = nearest_surface_gap(clusters, boundary=boundary)
+            force_norms = [float(np.linalg.norm(force)) for force in forces]
             print(
                 f"  step={step:6d}, t={time:.3e} s, "
-                f"gap={gap:.3e} m, dt={dt:.3e} s"
+                f"gap={gap:.3e} m, dt={dt:.3e} s, |F|={force_norms}"
             )
     else:
         print(f"Reached MAX_STEPS={MAX_STEPS} before contact")
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    plots_dir = OUTPUT_DIR / "plots"
-    snapshots_dir = OUTPUT_DIR / "snapshots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
     largest = max(cluster.n_primary for cluster in clusters)
-    summary = {
-        "mode": "dimer_monomer_to_trimer",
-        "time": time,
-        "steps": step,
-        "cluster_count": len(clusters),
-        "largest_cluster": largest,
-        "events": len(events),
-        "reached_trimer": bool(largest >= 3),
-        "box_size": BOX_SIZE_M,
-        "diameter": PRIMARY_DIAMETER_M,
-        "initial_gap": INITIAL_GAP_M,
-        "capture_tolerance": CAPTURE_TOLERANCE_M,
-        "friction_model": FRICTION_MODEL,
-    }
-
     config_used = {
-        "primary_diameter_m": PRIMARY_DIAMETER_M,
-        "particle_density_kg_m3": PARTICLE_DENSITY_KG_M3,
-        "box_size_m": BOX_SIZE_M,
-        "initial_gap_m": INITIAL_GAP_M,
-        "initial_approach_speed_m_s": INITIAL_APPROACH_SPEED_M_S,
-        "move_dimer": MOVE_DIMER,
+        "mode": "iron_dimer_monomer_efield",
+        "gas": gas.to_dict(),
+        "diameter": PRIMARY_DIAMETER_M,
+        "particle_density": IRON_DENSITY_KG_M3,
+        "box_size": BOX_SIZE_M,
+        "boundary_mode": boundary.mode,
+        "initial_gap": INITIAL_GAP_M,
         "brownian": BROWNIAN,
-        "random_seed": RANDOM_SEED,
-        "max_time_s": MAX_TIME_S,
-        "max_steps": MAX_STEPS,
-        "dt_factor": DT_FACTOR,
-        "dt_min_s": DT_MIN_S,
-        "dt_max_s": DT_MAX_S,
-        "capture_tolerance_m": CAPTURE_TOLERANCE_M,
+        "move_dimer": MOVE_DIMER,
         "friction_model": FRICTION_MODEL,
         "electric_field": electric_field.to_dict(),
-        "gas": gas.to_dict(),
+        "material": {
+            "name": "iron",
+            "density_kg_m3": IRON_DENSITY_KG_M3,
+            "polarizability_model": "conducting_sphere",
+            "polarizability_SI": IRON_PRIMARY_POLARIZABILITY_SI,
+        },
+        "seed": RANDOM_SEED,
     }
-    with (OUTPUT_DIR / "config_used.yml").open("w", encoding="utf-8") as fh:
-        yaml.safe_dump(config_used, fh, sort_keys=False)
-    with (OUTPUT_DIR / "run_summary.json").open("w", encoding="utf-8") as fh:
-        json.dump(summary, fh, indent=2)
-    pd.DataFrame([event.to_dict() for event in events]).to_csv(OUTPUT_DIR / "events.csv", index=False)
-    pd.DataFrame(stats).to_csv(OUTPUT_DIR / "cluster_stats.csv", index=False)
-    final_cluster = max(clusters, key=lambda cluster: cluster.n_primary)
-    pd.DataFrame(aggregate_table(final_cluster)).to_csv(OUTPUT_DIR / "final_aggregate.csv", index=False)
+    result = CoagulationResult(
+        clusters=clusters,
+        events=events,
+        stats=stats,
+        snapshots=snapshots,
+        config=config_used,
+        time=time,
+        steps=step,
+    )
+    write_coagulation_outputs(result, OUTPUT_DIR, make_plots=False)
+
     run_h5 = OUTPUT_DIR / "run.h5"
-    run_h5 = write_run_h5(run_h5, stats, snapshots, summary)
+    plots_dir = OUTPUT_DIR / "plots"
+    snapshots_dir = OUTPUT_DIR / "snapshots"
+
+    summary = {
+        "reached_trimer": bool(largest >= 3),
+        "largest_cluster": largest,
+        "events": len(events),
+        "time": time,
+        "steps": step,
+        "electric_field_V_m": ELECTRIC_FIELD_VECTOR_V_M,
+        "electric_field_kV_cm": 30.0,
+        "iron_polarizability_SI": IRON_PRIMARY_POLARIZABILITY_SI,
+    }
+    with (OUTPUT_DIR / "iron_efield_summary.json").open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
 
     print("Run complete")
     print(f"  simulated time: {time:.6e} s")
     print(f"  integration steps: {step}")
     print(f"  collision events: {len(events)}")
-    print(f"  final cluster count: {len(clusters)}")
     print(f"  largest cluster size: {largest}")
     print(f"  reached trimer: {largest >= 3}")
 
@@ -369,27 +343,13 @@ def main() -> None:
             box_size=BOX_SIZE_M,
             elev=VIEW_ELEVATION_DEG,
             azim=VIEW_AZIMUTH_DEG,
-            title=f"Final state, largest cluster = {largest}",
+            title=f"Iron + E field, largest cluster = {largest}",
             show_com=False,
         )
         if VISUALIZATION_BACKEND == "matplotlib":
             import matplotlib.pyplot as plt
 
             plt.close(snapshot_result[0])
-        closeup_result = plot_agglomeration_snapshot(
-            snapshots[-1],
-            plots_dir / "final_snapshot_closeup.png",
-            backend=VISUALIZATION_BACKEND,
-            box_size=None,
-            elev=VIEW_ELEVATION_DEG,
-            azim=VIEW_AZIMUTH_DEG,
-            show_box=False,
-            show_com=False,
-            sphere_resolution=24,
-            title="Final trimer close-up",
-        )
-        if VISUALIZATION_BACKEND == "matplotlib":
-            plt.close(closeup_result[0])
 
         if SAVE_PNG_SNAPSHOTS:
             paths = save_agglomeration_snapshots(
@@ -405,7 +365,7 @@ def main() -> None:
         if SAVE_VIDEO:
             video_path = save_agglomeration_video(
                 run_h5,
-                plots_dir / "dimer_monomer_to_trimer.mp4",
+                plots_dir / "iron_dimer_monomer_efield.mp4",
                 backend=VISUALIZATION_BACKEND,
                 max_frames=MAX_RENDERED_FRAMES,
                 fps=VIDEO_FPS,
@@ -415,10 +375,9 @@ def main() -> None:
             )
             print(f"  saved video to {video_path}")
     else:
-        print("Rendering disabled by LDAGG_RENDER=0")
+        print("Rendering disabled. Set LDAGG_RENDER=1 or RENDER_FIGURES=True to save plots/video.")
 
-    print(f"Summary JSON: {OUTPUT_DIR / 'run_summary.json'}")
-    print(f"Events CSV:   {OUTPUT_DIR / 'events.csv'}")
+    print(f"Summary JSON: {OUTPUT_DIR / 'iron_efield_summary.json'}")
     print(f"Run HDF5:     {run_h5}")
 
 

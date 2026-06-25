@@ -72,6 +72,51 @@ ldag grow --config examples/configs/sequential_growth.yml --out outputs/growth
 
 This starts from a monomer or dimer, launches one monomer near the aggregate, and repeats trials until monomers stick or escape. The default keeps the seed aggregate fixed for speed.
 
+## Constant DC Electric Field
+
+Neutral metal primary spheres can be given fixed induced dipoles in a uniform DC electric field. Example runs:
+
+```bash
+ldag coagulate --config examples/configs/dipole_box_agglomeration.yml --out outputs/dipole_box
+ldag grow --config examples/configs/dipole_sequential_growth.yml --out outputs/dipole_growth
+```
+
+The config section is:
+
+```yaml
+electric_field:
+  enabled: true
+  vector: [0.0, 0.0, 1.0e6]
+  medium_relative_permittivity: 1.00058
+  material_file: examples/materials/demo_metal_100nm.yml
+  polarizability_model: provided
+  dipole_cutoff: null
+  regularization_gap: 0.0
+```
+
+You can also pass `polarizability_SI` directly in the config; that direct value overrides the material file. For a conducting sphere estimate, use `polarizability_model: conducting_sphere` without `polarizability_SI`. The field model adds only induced dipole-dipole forces between different clusters. It does not add net charge, `qE` drift, Coulomb forces, torques, or aggregate rotation.
+
+## Diagnostics
+
+Coagulation and sequential-growth configs can request extra electric-field,
+force, transport, collision, and morphology diagnostics:
+
+```yaml
+diagnostics:
+  enabled: true
+  every: 1
+  store_snapshot_forces: true
+  store_event_metrics: true
+  store_pair_summary: true
+```
+
+When enabled, `diagnostics.csv` records fields such as `E_norm`, `alpha`,
+`p_norm`, `Gamma_dd_contact`, `dipole_energy`, `max_F_dipole`,
+`newton_residual_dipole`, `min_surface_gap`, drift/Brownian step estimates,
+and morphology metrics for the largest aggregate. `event_metrics.csv` is
+written when collisions occur and stores trigger geometry plus post-merge
+morphology. The same tables are also stored in `run.h5` groups.
+
 ## Output Files
 
 Simulation outputs include:
@@ -80,8 +125,11 @@ Simulation outputs include:
 - `run_summary.json`
 - `run.h5` or `trajectory_sample.h5`
 - `events.csv`
+- `diagnostics.csv` when diagnostics are enabled
+- `event_metrics.csv` when diagnostics are enabled and collisions occur
 - `cluster_stats.csv`
 - `final_aggregate.csv`
+- `final_diagnostics.json` and `final_diagnostics.csv`
 - `plots/*.png`
 
 Use:
